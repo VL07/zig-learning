@@ -1,5 +1,8 @@
 const std = @import("std");
 const request = @import("request.zig");
+const response = @import("response.zig");
+
+const Handler = fn (*request.Request, *response.Response) anyerror!void;
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
@@ -12,7 +15,7 @@ pub const Server = struct {
         };
     }
 
-    pub fn listen(this: *Server, callback_fn: fn (*const Server) anyerror!void) !void {
+    pub fn listen(this: *Server, callback_fn: fn (*const Server) anyerror!void, handler: Handler) !void {
         var server = try this.address.listen(.{ .reuse_address = true });
         defer server.deinit();
 
@@ -25,7 +28,7 @@ pub const Server = struct {
                 continue;
             };
 
-            _ = std.Thread.spawn(.{}, accept, .{ this, connection }) catch |err| {
+            _ = std.Thread.spawn(.{}, accept, .{ this, connection, handler }) catch |err| {
                 std.log.err("Unable to spawn connection thread: {s}", .{@errorName(err)});
                 connection.stream.close();
 
@@ -35,11 +38,32 @@ pub const Server = struct {
     }
 };
 
-fn accept(this: *Server, connection: std.net.Server.Connection) !void {
+fn accept(this: *Server, connection: std.net.Server.Connection, handler: Handler) !void {
     defer connection.stream.close();
 
-    var accepted_request = try request.parse_request_headers_to_request(this.allocator, connection.stream.reader().any());
-    defer accepted_request.deinit();
+    var res = response.Response.init(connection.stream.writer().any(), request.HttpVersion.http1_1);
 
-    std.debug.print("Incomming request: {s} {s}\n", .{ @tagName(accepted_request.method), accepted_request.uri });
+    var req = request.parse_request_headers_to_request(this.allocator, connection.stream.reader().any()) catch |err| {
+        var headers = std.StringHashMap([]const u8).init(this.allocator);
+        defer headers.deinit();
+
+        try headers.put("Content-Type", "text/plain; charset=UTF-8");
+
+        try switch (err) {
+            request.RequestError.InternalError => res.respond(response.StatusCode.internal_server_error, headers, "Internal server error"),
+            request.RequestError.InvalidRequest => res.respond(response.StatusCode.bad_request, headers, "Bad request"),
+            request.RequestError.EntityTooLarge => res.respond(response.StatusCode.content_too_large, headers, "Content too large"),
+            request.RequestError.UnsupportedMethod => res.respond(response.StatusCode.method_not_allowed, headers, "Method not allowed"),
+            request.RequestError.UnsupportedHttpVersion => res.respond(response.StatusCode.http_version_not_supported, headers, "Http version not supported"),
+        };
+
+        return;
+    };
+    defer req.deinit();
+
+    handler(&req, &res) catch |err| {
+        std.log.err("Handler error: {s}", .{@errorName(err)});
+    };
+
+    std.debug.print("closed req? {any}\n\n\n\n\n\n", .{res.has_responded});
 }

@@ -1,14 +1,15 @@
 const std = @import("std");
 
-const RequestError = error{
+pub const RequestError = error{
     InternalError,
     InvalidRequest,
     EntityTooLarge,
     UnsupportedMethod,
     UnsupportedHttpVersion,
+    // TooManyUriPathSegments,
 };
 
-const Method = enum {
+pub const Method = enum {
     const staticMap = std.StaticStringMap(Method).initComptime(.{
         .{ "GET", Method.get },
         .{ "POST", Method.post },
@@ -30,7 +31,7 @@ const Method = enum {
     }
 };
 
-const HttpVersion = enum {
+pub const HttpVersion = enum {
     const staticMap = std.StaticStringMap(HttpVersion).initComptime(.{
         .{ "HTTP/1.1", HttpVersion.http1_1 },
     });
@@ -42,7 +43,29 @@ const HttpVersion = enum {
 
         return version;
     }
+
+    pub fn to_string(this: HttpVersion) []const u8 {
+        return switch (this) {
+            .http1_1 => "HTTP/1.1",
+        };
+    }
 };
+
+// pub fn get_path_segments(path: []const u8) RequestError![][]const u8 {
+//     var segments = [_][]const u8{""} ** 100;
+
+//     const striped_path = if (path.len != 0 and path[0] == '/') path[1..path.len] else path;
+
+//     var iterator = std.mem.splitScalar(u8, striped_path, '/');
+//     for (0..(100 + 1)) |i| {
+//         if (i >= 100) return RequestError.TooManyUriPathSegments;
+
+//         const segment = iterator.next() orelse break;
+//         segments[i] = segment;
+//     }
+
+//     return &segments;
+// }
 
 pub const Request = struct {
     allocator: std.mem.Allocator,
