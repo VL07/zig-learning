@@ -9,6 +9,7 @@ pub fn up(repo: anytype) !void {
             t.primaryKey("id", .{}),
             t.column("account_id", .integer, .{ .reference = .{ "account", "id" }, .index = true, .optional = false }),
             t.column("email", .string, .{ .length = 100, .unique = true, .index = true, .optional = false }),
+            t.column("email_whitelist_pattern_id", .integer, .{ .index = true, .reference = .{ "email_whitelist", "id" }, .optional = true }),
             t.column("verified_at", .datetime, .{ .optional = true }),
             t.column("last_sign_in_at", .datetime, .{ .optional = true }),
             t.column("is_primary", .boolean, .{ .optional = false }),

@@ -1,6 +1,6 @@
 const std = @import("std");
 const jetzig = @import("jetzig");
-const session = @import("../lib/session.zig");
+const secureKeyPair = @import("../lib/secureKeyPair.zig");
 const tableRows = @import("../lib/tableRows.zig");
 
 pub const middleware_name = "auth";
@@ -19,12 +19,12 @@ pub fn afterRequest(self: *AuthMiddleware, request: *jetzig.Request) !void {
     const cookies = try request.cookies();
 
     if (cookies.get("session")) |sessionCookie| {
-        const decodedSession = try session.decode_session(sessionCookie.value) orelse {
+        const decodedSession = try secureKeyPair.parse_session(sessionCookie.value) orelse {
             cookies.delete("session") catch return;
             return;
         };
 
-        const accountId = try session.verify_and_update_session_get_account_id(request, &decodedSession) orelse {
+        const accountId = try secureKeyPair.verify_and_update_session_get_account_id(request, &decodedSession) orelse {
             cookies.delete("session") catch return;
             return;
         };
