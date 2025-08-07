@@ -19,7 +19,7 @@ pub const ResultCode = enum(u4) {
     }
 };
 
-const DnsHeader = packed struct {
+pub const DnsHeader = packed struct {
     id: u16,
     recursion_desired: bool,
     truncated_message: bool,
@@ -37,6 +37,29 @@ const DnsHeader = packed struct {
     answers: u16,
     authoritative_entries: u16,
     resource_entries: u16,
+
+    pub fn init() DnsHeader {
+        return DnsHeader{
+            .id = 0,
+
+            .recursion_desired = false,
+            .truncated_message = false,
+            .authoritative_answer = false,
+            .opcode = 0,
+            .response = false,
+
+            .rescode = ResultCode.noerror,
+            .checking_disabled = false,
+            .authed_data = false,
+            .z = false,
+            .recursion_available = false,
+
+            .questions = 0,
+            .answers = 0,
+            .authoritative_entries = 0,
+            .resource_entries = 0,
+        };
+    }
 
     pub fn initRead(buf: *BytePacketBuffer) !DnsHeader {
         var dns_header: DnsHeader = undefined;
@@ -65,6 +88,23 @@ const DnsHeader = packed struct {
 
         return dns_header;
     }
+
+    pub fn write(self: *const DnsHeader, buf: *BytePacketBuffer) !void {
+        try buf.writeU16(self.id);
+
+        try buf.writeU8(
+            @as(u8, @intFromBool(self.recursion_desired)) | (@as(u8, @intFromBool(self.truncated_message)) << 1) | (@as(u8, @intFromBool(self.authoritative_answer)) << 2) | (@as(u8, self.opcode) << 3) | (@as(u8, @intFromBool(self.response)) << 7),
+        );
+
+        try buf.writeU8(
+            @as(u8, @intFromEnum(self.rescode)) | (@as(u8, @intFromBool(self.checking_disabled)) << 4) | (@as(u8, @intFromBool(self.authed_data)) << 5) | (@as(u8, @intFromBool(self.z)) << 6) | (@as(u8, @intFromBool(self.recursion_available)) << 7),
+        );
+
+        try buf.writeU16(self.questions);
+        try buf.writeU16(self.answers);
+        try buf.writeU16(self.authoritative_entries);
+        try buf.writeU16(self.resource_entries);
+    }
 };
 
 pub const QueryTypeEnum = enum { unknown, a };
@@ -92,6 +132,14 @@ pub const DnsQuestion = struct {
     name: []const u8,
     qtype: QueryType,
 
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, qtype: QueryType) !DnsQuestion {
+        return DnsQuestion{
+            .allocator = allocator,
+            .name = try allocator.dupe(u8, name),
+            .qtype = qtype,
+        };
+    }
+
     pub fn initRead(allocator: std.mem.Allocator, buf: *BytePacketBuffer) !DnsQuestion {
         const dns_question = DnsQuestion{
             .allocator = allocator,
@@ -106,6 +154,14 @@ pub const DnsQuestion = struct {
 
     pub fn deinit(self: *const DnsQuestion) void {
         self.allocator.free(self.name);
+    }
+
+    pub fn write(self: *const DnsQuestion, buf: *BytePacketBuffer) !void {
+        try buf.write_qname(self.name);
+
+        const type_num = self.qtype.toNum();
+        try buf.writeU16(type_num);
+        try buf.writeU16(1);
     }
 };
 
@@ -178,67 +234,127 @@ pub const DnsRecord = union(DnsRecordEnum) {
             },
         }
     }
+
+    pub fn write(self: *const DnsRecord, buf: *BytePacketBuffer) !usize {
+        const start_pos = buf.pos;
+
+        switch (self.*) {
+            .a => |a| {
+                try buf.write_qname(a.domain);
+
+                const query_type_num = (QueryType{ .a = undefined }).toNum();
+                try buf.writeU16(query_type_num);
+
+                try buf.writeU16(1);
+                try buf.writeU32(a.ttl);
+                try buf.writeU16(4);
+
+                try buf.writeU32(a.addr.sa.addr);
+            },
+            .unknown => |_| {
+                unreachable;
+            },
+        }
+
+        return buf.pos - start_pos;
+    }
 };
 
 pub const DnsPacket = struct {
     allocator: std.mem.Allocator,
     header: DnsHeader,
-    questions: []DnsQuestion,
-    answers: []DnsRecord,
-    authorities: []DnsRecord,
-    resources: []DnsRecord,
+    questions: std.ArrayList(DnsQuestion),
+    answers: std.ArrayList(DnsRecord),
+    authorities: std.ArrayList(DnsRecord),
+    resources: std.ArrayList(DnsRecord),
+
+    pub fn init(allocator: std.mem.Allocator) !DnsPacket {
+        return DnsPacket{
+            .allocator = allocator,
+            .header = DnsHeader.init(),
+            .questions = .init(allocator),
+            .answers = .init(allocator),
+            .authorities = .init(allocator),
+            .resources = .init(allocator),
+        };
+    }
 
     pub fn initFromBuf(allocator: std.mem.Allocator, buf: *BytePacketBuffer) !DnsPacket {
         const header = try DnsHeader.initRead(buf);
-        const dns_packet = DnsPacket{
+        var dns_packet = DnsPacket{
             .allocator = allocator,
             .header = header,
-            .questions = try allocator.alloc(DnsQuestion, header.questions),
-            .answers = try allocator.alloc(DnsRecord, header.answers),
-            .authorities = try allocator.alloc(DnsRecord, header.authoritative_entries),
-            .resources = try allocator.alloc(DnsRecord, header.resource_entries),
+            .questions = try .initCapacity(allocator, header.questions),
+            .answers = try .initCapacity(allocator, header.answers),
+            .authorities = try .initCapacity(allocator, header.authoritative_entries),
+            .resources = try .initCapacity(allocator, header.resource_entries),
         };
 
-        for (0..header.questions) |i| {
-            dns_packet.questions[i] = try DnsQuestion.initRead(allocator, buf);
+        for (0..header.questions) |_| {
+            try dns_packet.questions.append(try DnsQuestion.initRead(allocator, buf));
         }
 
-        for (0..header.answers) |i| {
-            dns_packet.answers[i] = try DnsRecord.initRead(allocator, buf);
+        for (0..header.answers) |_| {
+            try dns_packet.answers.append(try DnsRecord.initRead(allocator, buf));
         }
 
-        for (0..header.authoritative_entries) |i| {
-            dns_packet.authorities[i] = try DnsRecord.initRead(allocator, buf);
+        for (0..header.authoritative_entries) |_| {
+            try dns_packet.authorities.append(try DnsRecord.initRead(allocator, buf));
         }
 
-        for (0..header.resource_entries) |i| {
-            dns_packet.resources[i] = try DnsRecord.initRead(allocator, buf);
+        for (0..header.resource_entries) |_| {
+            try dns_packet.resources.append(try DnsRecord.initRead(allocator, buf));
         }
 
         return dns_packet;
     }
 
     pub fn deinit(self: *const DnsPacket) void {
-        for (self.questions) |question| {
+        for (self.questions.items) |question| {
             question.deinit();
         }
 
-        for (self.answers) |answer| {
+        for (self.answers.items) |answer| {
             answer.deinit();
         }
 
-        for (self.authorities) |authority| {
+        for (self.authorities.items) |authority| {
             authority.deinit();
         }
 
-        for (self.resources) |resource| {
+        for (self.resources.items) |resource| {
             resource.deinit();
         }
 
-        self.allocator.free(self.questions);
-        self.allocator.free(self.answers);
-        self.allocator.free(self.authorities);
-        self.allocator.free(self.resources);
+        self.questions.deinit();
+        self.answers.deinit();
+        self.authorities.deinit();
+        self.resources.deinit();
+    }
+
+    pub fn write(self: *DnsPacket, buf: *BytePacketBuffer) !void {
+        self.header.questions = @intCast(self.questions.items.len);
+        self.header.answers = @intCast(self.answers.items.len);
+        self.header.authoritative_entries = @intCast(self.authorities.items.len);
+        self.header.resource_entries = @intCast(self.resources.items.len);
+
+        try self.header.write(buf);
+
+        for (self.questions.items) |question| {
+            try question.write(buf);
+        }
+
+        for (self.answers.items) |answer| {
+            _ = try answer.write(buf);
+        }
+
+        for (self.authorities.items) |authority| {
+            _ = try authority.write(buf);
+        }
+
+        for (self.resources.items) |resource| {
+            _ = try resource.write(buf);
+        }
     }
 };
 
@@ -270,7 +386,7 @@ test "parse packet" {
         .resource_entries = 0,
     }, packet.header);
 
-    const question = packet.questions[0];
+    const question = packet.questions.items[0];
     try std.testing.expectEqualSlices(
         u8,
         "google.com",
@@ -278,7 +394,7 @@ test "parse packet" {
     );
     try std.testing.expectEqual(question.qtype, QueryType{ .a = undefined });
 
-    const answer = packet.answers[0];
+    const answer = packet.answers.items[0];
     switch (answer) {
         .a => |a| {
             try std.testing.expectEqualSlices(u8, "google.com", a.domain);
