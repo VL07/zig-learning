@@ -7,7 +7,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    const qname = "google.com";
+    const qname = "www.yahoo.com";
     const qtype = packetParsing.QueryTypeEnum.a;
 
     // const client_addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 43210);
@@ -58,9 +58,21 @@ pub fn main() !void {
     const res_packet = try packetParsing.DnsPacket.initFromBuf(allocator, &res_buf);
     defer res_packet.deinit();
 
-    std.debug.print("{any}", .{res_packet.header});
+    std.debug.print("{any}\n", .{res_packet.header});
+
+    for (res_packet.questions.items) |question| {
+        std.debug.print("{any}\n", .{question});
+    }
 
     for (res_packet.answers.items) |answer| {
-        std.debug.print("{any}", .{answer});
+        std.debug.print("{any}\n", .{answer});
+    }
+
+    for (res_packet.authorities.items) |authority| {
+        std.debug.print("{any}\n", .{authority});
+    }
+
+    for (res_packet.resources.items) |resource| {
+        std.debug.print("{any}\n", .{resource});
     }
 }

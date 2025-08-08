@@ -153,7 +153,7 @@ pub fn writeU32(self: *BytePacketBuffer, val: u32) BytePacketBufferError!void {
     try self.writeU16(@intCast(val & 0xFF));
 }
 
-pub fn write_qname(self: *BytePacketBuffer, qname: []const u8) BytePacketBufferError!void {
+pub fn writeQname(self: *BytePacketBuffer, qname: []const u8) BytePacketBufferError!void {
     var iterator = std.mem.splitScalar(u8, qname, '.');
     while (iterator.next()) |label| {
         if (label.len >= 0x3F) {
@@ -167,4 +167,17 @@ pub fn write_qname(self: *BytePacketBuffer, qname: []const u8) BytePacketBufferE
     }
 
     try self.writeU8(0);
+}
+
+pub fn set(self: *BytePacketBuffer, pos: usize, val: u8) BytePacketBufferError!void {
+    if (pos >= 512) {
+        return BytePacketBufferError.EndOfBuffer;
+    }
+
+    self.buf[pos] = val;
+}
+
+pub fn setU16(self: *BytePacketBuffer, pos: usize, val: u16) BytePacketBufferError!void {
+    try self.set(pos, @intCast(val >> 8));
+    try self.set(pos + 1, @intCast(val & 0xFF));
 }

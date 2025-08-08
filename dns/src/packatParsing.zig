@@ -107,14 +107,29 @@ pub const DnsHeader = packed struct {
     }
 };
 
-pub const QueryTypeEnum = enum { unknown, a };
+pub const QueryTypeEnum = enum {
+    unknown,
+    a,
+    ns,
+    cname,
+    mx,
+    aaaa,
+};
 pub const QueryType = union(QueryTypeEnum) {
     unknown: u16,
     a: void,
+    ns: void,
+    cname: void,
+    mx: void,
+    aaaa: void,
 
     pub fn initNum(num: u16) QueryType {
         return switch (num) {
             1 => QueryType{ .a = undefined },
+            2 => QueryType{ .ns = undefined },
+            5 => QueryType{ .cname = undefined },
+            15 => QueryType{ .mx = undefined },
+            28 => QueryType{ .aaaa = undefined },
             else => |val| QueryType{ .unknown = val },
         };
     }
@@ -123,6 +138,10 @@ pub const QueryType = union(QueryTypeEnum) {
         return switch (self) {
             .unknown => |val| val,
             .a => 1,
+            .ns => 2,
+            .cname => 5,
+            .mx => 15,
+            .aaaa => 28,
         };
     }
 };
@@ -157,7 +176,7 @@ pub const DnsQuestion = struct {
     }
 
     pub fn write(self: *const DnsQuestion, buf: *BytePacketBuffer) !void {
-        try buf.write_qname(self.name);
+        try buf.writeQname(self.name);
 
         const type_num = self.qtype.toNum();
         try buf.writeU16(type_num);
@@ -165,11 +184,7 @@ pub const DnsQuestion = struct {
     }
 };
 
-const DnsRecordEnum = enum {
-    unknown,
-    a,
-};
-pub const DnsRecord = union(DnsRecordEnum) {
+pub const DnsRecord = union(QueryTypeEnum) {
     unknown: struct {
         allocator: std.mem.Allocator,
         domain: []const u8,
@@ -180,7 +195,32 @@ pub const DnsRecord = union(DnsRecordEnum) {
     a: struct {
         allocator: std.mem.Allocator,
         domain: []const u8,
-        addr: std.net.Ip4Address,
+        addr: std.net.Address,
+        ttl: u32,
+    },
+    ns: struct {
+        allocator: std.mem.Allocator,
+        domain: []const u8,
+        host: []const u8,
+        ttl: u32,
+    },
+    cname: struct {
+        allocator: std.mem.Allocator,
+        domain: []const u8,
+        host: []const u8,
+        ttl: u32,
+    },
+    mx: struct {
+        allocator: std.mem.Allocator,
+        domain: []const u8,
+        priority: u16,
+        host: []const u8,
+        ttl: u32,
+    },
+    aaaa: struct {
+        allocator: std.mem.Allocator,
+        domain: []const u8,
+        addr: std.net.Address,
         ttl: u32,
     },
 
@@ -196,7 +236,7 @@ pub const DnsRecord = union(DnsRecordEnum) {
         switch (qtype) {
             .a => {
                 const raw_addr = try buf.readU32();
-                const addr = std.net.Ip4Address.init([_]u8{
+                const addr = std.net.Address.initIp4([_]u8{
                     @intCast((raw_addr >> 24) & 0xFF),
                     @intCast((raw_addr >> 16) & 0xFF),
                     @intCast((raw_addr >> 8) & 0xFF),
@@ -207,6 +247,51 @@ pub const DnsRecord = union(DnsRecordEnum) {
                     .allocator = allocator,
                     .domain = domain,
                     .addr = addr,
+                    .ttl = ttl,
+                } };
+            },
+            .aaaa => {
+                var ip: [16]u8 = undefined;
+                for (0..ip.len) |i| {
+                    ip[i] = try buf.read();
+                }
+
+                const addr = std.net.Address.initIp6(ip, 0, 0, 0);
+
+                return DnsRecord{ .aaaa = .{ .allocator = allocator, .domain = domain, .addr = addr, .ttl = ttl } };
+            },
+            .ns => {
+                const ns = try buf.readQname(allocator);
+                errdefer allocator.free(ns);
+
+                return DnsRecord{ .ns = .{
+                    .allocator = allocator,
+                    .domain = domain,
+                    .host = ns,
+                    .ttl = ttl,
+                } };
+            },
+            .cname => {
+                const cname = try buf.readQname(allocator);
+                errdefer allocator.free(cname);
+
+                return DnsRecord{ .cname = .{
+                    .allocator = allocator,
+                    .domain = domain,
+                    .host = cname,
+                    .ttl = ttl,
+                } };
+            },
+            .mx => {
+                const priority = try buf.readU16();
+                const mx = try buf.readQname(allocator);
+                errdefer allocator.free(mx);
+
+                return DnsRecord{ .mx = .{
+                    .allocator = allocator,
+                    .domain = domain,
+                    .priority = priority,
+                    .host = mx,
                     .ttl = ttl,
                 } };
             },
@@ -226,12 +311,21 @@ pub const DnsRecord = union(DnsRecordEnum) {
 
     pub fn deinit(self: *const DnsRecord) void {
         switch (self.*) {
-            .unknown => {
-                self.unknown.allocator.free(self.unknown.domain);
+            .unknown => self.unknown.allocator.free(self.unknown.domain),
+            .a => self.a.allocator.free(self.a.domain),
+            .ns => {
+                self.ns.allocator.free(self.ns.domain);
+                self.ns.allocator.free(self.ns.host);
             },
-            .a => {
-                self.a.allocator.free(self.a.domain);
+            .cname => {
+                self.cname.allocator.free(self.cname.domain);
+                self.cname.allocator.free(self.cname.host);
             },
+            .mx => {
+                self.mx.allocator.free(self.mx.domain);
+                self.mx.allocator.free(self.mx.host);
+            },
+            .aaaa => self.aaaa.allocator.free(self.aaaa.domain),
         }
     }
 
@@ -240,7 +334,7 @@ pub const DnsRecord = union(DnsRecordEnum) {
 
         switch (self.*) {
             .a => |a| {
-                try buf.write_qname(a.domain);
+                try buf.writeQname(a.domain);
 
                 const query_type_num = (QueryType{ .a = undefined }).toNum();
                 try buf.writeU16(query_type_num);
@@ -249,10 +343,64 @@ pub const DnsRecord = union(DnsRecordEnum) {
                 try buf.writeU32(a.ttl);
                 try buf.writeU16(4);
 
-                try buf.writeU32(a.addr.sa.addr);
+                try buf.writeU32(a.addr.in.sa.addr);
+            },
+            .ns => |ns| {
+                try buf.writeQname(ns.domain);
+                try buf.writeU16((QueryType{ .ns = undefined }).toNum());
+                try buf.writeU16(1);
+                try buf.writeU32(ns.ttl);
+
+                const pos = buf.pos;
+                try buf.writeU16(0);
+
+                try buf.writeQname(ns.host);
+
+                const size = buf.pos - (pos + 2);
+                try buf.setU16(pos, @intCast(size));
+            },
+            .cname => |cname| {
+                try buf.writeQname(cname.domain);
+                try buf.writeU16((QueryType{ .cname = undefined }).toNum());
+                try buf.writeU16(1);
+                try buf.writeU32(cname.ttl);
+
+                const pos = buf.pos;
+                try buf.writeU16(0);
+
+                try buf.writeQname(cname.host);
+
+                const size = buf.pos - (pos + 2);
+                try buf.setU16(pos, @intCast(size));
+            },
+            .mx => |mx| {
+                try buf.writeQname(mx.domain);
+                try buf.writeU16((QueryType{ .mx = undefined }).toNum());
+                try buf.writeU16(1);
+                try buf.writeU32(mx.ttl);
+
+                const pos = buf.pos;
+                try buf.writeU16(0);
+
+                try buf.writeU16(mx.priority);
+                try buf.writeQname(mx.host);
+
+                const size = buf.pos - (pos + 2);
+                try buf.setU16(pos, @intCast(size));
+            },
+            .aaaa => |aaaa| {
+                try buf.writeQname(aaaa.domain);
+                try buf.writeU16((QueryType{ .aaaa = undefined }).toNum());
+                try buf.writeU16(1);
+                try buf.writeU32(aaaa.ttl);
+                try buf.writeU16(16);
+
+                for (aaaa.addr.in6.sa.addr) |segment| {
+                    try buf.writeU8(segment);
+                }
             },
             .unknown => |_| {
-                unreachable;
+                // Do nothing
             },
         }
 
@@ -398,7 +546,7 @@ test "parse packet" {
     switch (answer) {
         .a => |a| {
             try std.testing.expectEqualSlices(u8, "google.com", a.domain);
-            try std.testing.expectEqual(std.net.Ip4Address.init(.{ 142, 250, 74, 14 }, 0), a.addr);
+            try std.testing.expectEqual(std.net.Address.initIp4(.{ 142, 250, 74, 14 }, 0).in.sa.addr, a.addr.in.sa.addr);
             try std.testing.expectEqual(300, a.ttl);
         },
         else => try std.testing.expect(false),
