@@ -3,9 +3,7 @@ const std = @import("std");
 const packetParsing = @import("packatParsing.zig");
 const BytePacketBuffer = @import("BytePacketBuffer.zig");
 
-fn lookup(allocator: std.mem.Allocator, qname: []const u8, qtype: packetParsing.QueryType) !packetParsing.DnsPacket {
-    var server_addr = std.net.Address.initIp4(.{ 8, 8, 8, 8 }, 53);
-
+fn lookup(allocator: std.mem.Allocator, qname: []const u8, qtype: packetParsing.QueryType, server_addr: std.net.Address) !packetParsing.DnsPacket {
     const socket = try std.posix.socket(
         std.posix.AF.INET,
         std.posix.SOCK.DGRAM,
@@ -18,9 +16,9 @@ fn lookup(allocator: std.mem.Allocator, qname: []const u8, qtype: packetParsing.
     var dns_packet = try packetParsing.DnsPacket.init(allocator);
     defer dns_packet.deinit();
 
-    dns_packet.header.id = 6666;
+    dns_packet.header.id = 4123;
     dns_packet.header.questions = 1;
-    dns_packet.header.recursion_desired = true;
+    dns_packet.header.recursion_desired = false;
     try dns_packet.questions.append(try packetParsing.DnsQuestion.init(
         allocator,
         qname,
@@ -29,9 +27,10 @@ fn lookup(allocator: std.mem.Allocator, qname: []const u8, qtype: packetParsing.
 
     var req_buf = BytePacketBuffer.init();
     try dns_packet.write(&req_buf);
+
     _ = try std.posix.send(
         socket,
-        req_buf.buf[0..],
+        req_buf.buf[0..req_buf.pos],
         0,
     );
 
@@ -45,6 +44,41 @@ fn lookup(allocator: std.mem.Allocator, qname: []const u8, qtype: packetParsing.
     const res_packet = try packetParsing.DnsPacket.initFromBuf(allocator, &res_buf);
 
     return res_packet;
+}
+
+fn recursiveLookup(allocator: std.mem.Allocator, qname: []const u8, qtype: packetParsing.QueryType) !packetParsing.DnsPacket {
+    var ns = std.net.Address.initIp4(.{ 198, 41, 0, 4 }, 53);
+    // var ns = std.net.Address.initIp4(.{ 192, 36, 148, 17 }, 53);
+
+    while (true) {
+        std.debug.print("lookup attempt of {s} {s} with ns {any}\n", .{ @tagName(qtype), qname, std.mem.asBytes(&ns.in.sa.addr) });
+
+        const response = try lookup(allocator, qname, qtype, ns);
+        errdefer response.deinit();
+
+        if (response.answers.items.len != 0 and response.header.rescode == .noerror) {
+            return response;
+        }
+
+        if (response.header.rescode == .nxdomain) {
+            return response;
+        }
+
+        if (try response.getResolvedNs(qname)) |new_ns| {
+            ns = new_ns;
+            ns.setPort(53);
+
+            continue;
+        }
+
+        const new_ns_name = try response.getUnresolvedNs(qname) orelse return response;
+
+        const recursive_res = try recursiveLookup(allocator, new_ns_name, packetParsing.QueryType{ .a = undefined });
+        defer recursive_res.deinit();
+
+        ns = recursive_res.getRandomA() orelse return response;
+        ns.setPort(53);
+    }
 }
 
 fn handleQuery(allocator: std.mem.Allocator, socket: anytype) !void {
@@ -75,11 +109,13 @@ fn handleQuery(allocator: std.mem.Allocator, socket: anytype) !void {
     if (req_packet.questions.pop()) |question| {
         std.debug.print("Got query for {s}\n", .{question.name});
 
-        if (lookup(
+        if (recursiveLookup(
             allocator,
             question.name,
             question.qtype,
         )) |lookup_res| {
+            defer lookup_res.deinit();
+
             try res_packet.questions.append(try packetParsing.DnsQuestion.init(
                 allocator,
                 question.name,
@@ -88,20 +124,18 @@ fn handleQuery(allocator: std.mem.Allocator, socket: anytype) !void {
             res_packet.header.rescode = lookup_res.header.rescode;
 
             for (lookup_res.answers.items) |answer| {
-                std.debug.print("{any}\n", .{answer});
                 try res_packet.answers.append(try answer.clone(allocator));
             }
 
             for (lookup_res.authorities.items) |authority| {
-                std.debug.print("{any}\n", .{authority});
                 try res_packet.authorities.append(try authority.clone(allocator));
             }
 
             for (lookup_res.resources.items) |resource| {
-                std.debug.print("{any}\n", .{resource});
                 try res_packet.resources.append(try resource.clone(allocator));
             }
-        } else |_| {
+        } else |err| {
+            std.debug.print("{s}\n", .{@errorName(err)});
             res_packet.header.rescode = packetParsing.ResultCode.servfail;
         }
     } else {

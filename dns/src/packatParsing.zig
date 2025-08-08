@@ -547,6 +547,68 @@ pub const DnsPacket = struct {
             _ = try resource.write(buf);
         }
     }
+
+    pub fn getRandomA(self: *const DnsPacket) ?std.net.Address {
+        for (self.answers.items) |answer| {
+            switch (answer) {
+                .a => |a| return a.addr,
+                else => continue,
+            }
+        }
+
+        return null;
+    }
+
+    const NsEntry = struct { []const u8, []const u8 };
+    fn getNs(self: *const DnsPacket, qname: []const u8) !std.ArrayList(NsEntry) {
+        var nameServers = try std.ArrayList(NsEntry).initCapacity(self.allocator, self.authorities.items.len);
+
+        for (self.authorities.items) |authority| {
+            switch (authority) {
+                .ns => |ns| {
+                    if (!std.mem.endsWith(u8, qname, ns.domain)) {
+                        continue;
+                    }
+
+                    try nameServers.append(.{ ns.domain, ns.host });
+                },
+                else => continue,
+            }
+        }
+
+        return nameServers;
+    }
+
+    pub fn getResolvedNs(self: *const DnsPacket, qname: []const u8) !?std.net.Address {
+        const nameServers = try self.getNs(qname);
+        defer nameServers.deinit();
+
+        for (nameServers.items) |ns| {
+            for (self.resources.items) |resource| {
+                switch (resource) {
+                    .a => |a| {
+                        if (!std.mem.eql(u8, a.domain, ns[1])) {
+                            continue;
+                        }
+
+                        return a.addr;
+                    },
+                    else => continue,
+                }
+            }
+        }
+
+        return null;
+    }
+
+    pub fn getUnresolvedNs(self: *const DnsPacket, qname: []const u8) !?[]const u8 {
+        const nameServers = try self.getNs(qname);
+        if (nameServers.items.len < 1) {
+            return null;
+        }
+
+        return nameServers.items[0][1];
+    }
 };
 
 test "parse packet" {
