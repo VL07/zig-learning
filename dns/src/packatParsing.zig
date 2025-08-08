@@ -329,6 +329,49 @@ pub const DnsRecord = union(QueryTypeEnum) {
         }
     }
 
+    pub fn clone(self: *const DnsRecord, allocator: std.mem.Allocator) !DnsRecord {
+        return switch (self.*) {
+            .unknown => |unknown| DnsRecord{ .unknown = .{
+                .allocator = allocator,
+                .domain = try allocator.dupe(u8, unknown.domain),
+                .qtype = unknown.qtype,
+                .data_len = unknown.data_len,
+                .ttl = unknown.ttl,
+            } },
+            .a => |a| DnsRecord{ .a = .{
+                .allocator = allocator,
+                .domain = try allocator.dupe(u8, a.domain),
+                .addr = a.addr,
+                .ttl = a.ttl,
+            } },
+            .ns => |ns| DnsRecord{ .ns = .{
+                .allocator = allocator,
+                .domain = try allocator.dupe(u8, ns.domain),
+                .host = try allocator.dupe(u8, ns.host),
+                .ttl = ns.ttl,
+            } },
+            .cname => |cname| DnsRecord{ .cname = .{
+                .allocator = allocator,
+                .domain = try allocator.dupe(u8, cname.domain),
+                .host = try allocator.dupe(u8, cname.host),
+                .ttl = cname.ttl,
+            } },
+            .mx => |mx| DnsRecord{ .mx = .{
+                .allocator = allocator,
+                .domain = try allocator.dupe(u8, mx.domain),
+                .priority = mx.priority,
+                .host = try allocator.dupe(u8, mx.host),
+                .ttl = mx.ttl,
+            } },
+            .aaaa => |aaaa| DnsRecord{ .aaaa = .{
+                .allocator = allocator,
+                .domain = try allocator.dupe(u8, aaaa.domain),
+                .addr = aaaa.addr,
+                .ttl = aaaa.ttl,
+            } },
+        };
+    }
+
     pub fn write(self: *const DnsRecord, buf: *BytePacketBuffer) !usize {
         const start_pos = buf.pos;
 
@@ -343,7 +386,7 @@ pub const DnsRecord = union(QueryTypeEnum) {
                 try buf.writeU32(a.ttl);
                 try buf.writeU16(4);
 
-                try buf.writeU32(a.addr.in.sa.addr);
+                try buf.writeU32(std.mem.nativeToBig(u32, a.addr.in.sa.addr));
             },
             .ns => |ns| {
                 try buf.writeQname(ns.domain);
@@ -551,4 +594,42 @@ test "parse packet" {
         },
         else => try std.testing.expect(false),
     }
+}
+
+test "write packet" {
+    var packet = try DnsPacket.init(std.testing.allocator);
+    defer packet.deinit();
+
+    packet.header.id = 7017;
+    packet.header.recursion_desired = true;
+    packet.header.truncated_message = false;
+    packet.header.authoritative_answer = false;
+    packet.header.opcode = 0;
+    packet.header.response = true;
+    packet.header.rescode = .noerror;
+    packet.header.checking_disabled = false;
+    packet.header.authed_data = false;
+    packet.header.z = false;
+    packet.header.recursion_available = true;
+    packet.header.questions = 1;
+    packet.header.answers = 1;
+    packet.header.authoritative_entries = 0;
+    packet.header.resource_entries = 0;
+
+    try packet.questions.append(try DnsQuestion.init(std.testing.allocator, "google.com"[0..], QueryType{ .a = undefined }));
+    try packet.answers.append(DnsRecord{ .a = .{
+        .allocator = std.testing.allocator,
+        .domain = try std.testing.allocator.dupe(u8, "google.com"[0..]),
+        .addr = std.net.Address.initIp4(.{ 142, 250, 74, 14 }, 0),
+        .ttl = 300,
+    } });
+
+    var buf = BytePacketBuffer.init();
+    try packet.write(&buf);
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 0x1B, 0x69, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x06, 0x67, 0x6F, 0x6F, 0x67, 0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D, 0x00, 0x00, 0x01, 0x00, 0x01, 0x06, 0x67, 0x6F, 0x6F, 0x67, 0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2C, 0x00, 0x04, 0x8E, 0xFA, 0x4A, 0x0E },
+        buf.buf[0..buf.pos],
+    );
 }

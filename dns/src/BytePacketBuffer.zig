@@ -150,7 +150,7 @@ pub fn writeU16(self: *BytePacketBuffer, val: u16) BytePacketBufferError!void {
 
 pub fn writeU32(self: *BytePacketBuffer, val: u32) BytePacketBufferError!void {
     try self.writeU16(@intCast(val >> 16));
-    try self.writeU16(@intCast(val & 0xFF));
+    try self.writeU16(@intCast(val & 0xFFFF));
 }
 
 pub fn writeQname(self: *BytePacketBuffer, qname: []const u8) BytePacketBufferError!void {
